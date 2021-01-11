@@ -1,0 +1,180 @@
+type: edu
+custom_name: stage4
+files:
+- name: translator/translator.py
+  visible: true
+  text: |
+    import requests
+
+    from bs4 import BeautifulSoup
+
+    print('Type "en" if you want to translate from French into English, '
+          'or "fr" if you want to translate from English into French:')
+
+    language_choice = input()
+
+    print("Type the word you want to translate:")
+
+    word_to_translate = input()
+
+    print(f'You chose "{language_choice}" as the language to translate "{word_to_translate}" to.')
+
+    if language_choice == "en":
+        r = requests.get("https://context.reverso.net/translation/french-english/" + word_to_translate,
+                         headers={'User-Agent': "Mozilla/5.0"})
+    else:
+        r = requests.get("https://context.reverso.net/translation/english-french/" + word_to_translate,
+                         headers={'User-Agent': "Mozilla/5.0"})
+
+    if r:
+        print(r.status_code, "OK")
+        soup = BeautifulSoup(r.content, "html.parser")
+        print("Translations")
+
+        all_translations = soup.find_all("a", {"class": "translation"})
+        all_examples = soup.find_all("div", {"class": "trg ltr"})
+
+        words = []
+        examples = []
+
+        for translation in all_translations:
+            print(translation.text.strip())
+
+        print("Examples")
+
+        for example in all_examples:
+            print(example.text.strip())
+
+    else:
+        print("NO")
+  learner_created: false
+- name: tests.py
+  visible: false
+  text: |
+    from hstest.stage_test import StageTest
+    from hstest.test_case import TestCase
+    from hstest.check_result import CheckResult
+    import requests
+    from itertools import chain
+    from bs4 import BeautifulSoup
+    import sys
+
+
+    if sys.platform.startswith("win"):
+        import _locale
+        # pylint: disable=protected-access
+        _locale._getdefaultlocale = (lambda *args: ['en_US', 'utf8'])
+
+    CheckResult.correct = lambda: CheckResult(True, '')
+    CheckResult.wrong = lambda feedback: CheckResult(False, feedback)
+
+
+    languages = ["arabic", "german", "english", "spanish", "french",
+                 "hebrew", "japanese", "dutch", "polish", "portuguese",
+                 "romanian", "russian", "turkish"]
+
+
+    class TranslatorTest(StageTest):
+        def generate(self):
+            return [
+                TestCase(stdin='3\n7\nwhat\n', attach='3\n7\nwhat'),
+                TestCase(stdin='12\n3\nничтожество\n', attach='12\n3\nничтожество'),
+                TestCase(stdin='5\n9\nrue\n', attach='5\n9\nrue'),
+                TestCase(stdin='4\n8\nnoches\n', attach='4\n8\nnoches'),
+            ]
+
+        def check(self, reply, attach):
+            l1, l2, word = attach.split("\n")
+            l1, l2 = int(l1), int(l2)
+            second_language_name = languages[l2 - 1]
+
+            translations_title = "{0} translations".format(second_language_name).lower()
+            if translations_title not in reply.lower():
+                return CheckResult.wrong("Your program should output the phrase \"<Language> Translations\" "
+                                         "before printing the translations of the word.")
+            # the section with translations and examples
+            translations = reply[reply.lower().index(translations_title):].strip()
+
+            examples_title = "{0} examples".format(second_language_name).lower()
+            if examples_title not in translations.lower():
+                return CheckResult.wrong("Your program should output the phrase \"<Language> Examples\" "
+                                         "before printing the examples of the translations.\n "
+                                         "The examples should also follow the translations.")
+            # the beginning of the section with examples
+            examples_index = translations.lower().index(examples_title)
+            examples = translations[examples_index:].strip().split("\n")
+            examples = [line for line in examples if line and not line.lower().startswith('example')]
+
+            translations = translations[:examples_index].split("\n")
+            translations = [line for line in translations if line and not line.lower().startswith('translation')]
+
+            if len(translations) == 0:
+                return CheckResult.wrong("No translations are found. \n"
+                                         "Make sure that each translated word is placed in a new line.")
+
+            if len(examples) == 0:
+                return CheckResult.wrong("No context examples are found. \n"
+                                         "Make sure that your context examples follow the translations \n"
+                                         "and that each example is placed in a new line.")
+
+            true_translations, true_examples = get_results(l1, l2, word)
+            if true_translations == "Connection error":
+                return CheckResult.wrong("Connection error occurred while connecting to the context.reverso.net\n"
+                                         "Please, try again a bit later.")
+
+            translations_intersection = [True for user_translation in translations
+                                         if user_translation.lower() in true_translations]
+
+            if not translations_intersection:
+                return CheckResult.wrong("No correct translations are found.\n"
+                                         "Make sure that you place every word in a new line \n"
+                                         "and get rid of lists' commas, quotation marks and square brackets.")
+
+            examples_intersection = [True for user_example in examples if user_example.lower() in true_examples]
+
+            if not examples_intersection:
+                return CheckResult.wrong("No correct examples are found.\n"
+                                         "Make sure that you place every example in a new line \n"
+                                         "and get rid of lists' commas, quotation marks and square brackets.")
+
+            if len(true_examples) >= 10 and len(examples_intersection) < 10 or \
+                    len(true_examples) < 10 and len(true_examples) != len(examples_intersection):
+                return CheckResult.wrong("Please, output at least 5 examples for the given word\n"
+                                         "(that is, 10 sentences, one for each of two languages). \n"
+                                         "If there are less than 5 examples, output them all.\n"
+                                         "Make sure that you place every sentence in a new line \n"
+                                         "and get rid of lists' commas, quotation marks and square brackets.")
+
+            return CheckResult.correct()
+
+
+    def get_results(l1, l2, word):
+        l1 = languages[l1 - 1]
+        l2 = languages[l2 - 1]
+        url = f"https://context.reverso.net/translation/{l1}-{l2}/{word}"
+        user_agent = 'Mozilla/5.0'
+        try:
+            response = requests.get(url, timeout=10, headers={'User-Agent': user_agent})
+        except requests.exceptions.ReadTimeout:
+            return "Connection error", "Connection error"
+
+        raw_contents = BeautifulSoup(response.content, 'html.parser')
+        # translate words
+        translations = raw_contents.find_all('a', {"class": 'translation'})
+        # example sentences
+        sentences_src, sentences_target = \
+            raw_contents.find_all('div', {"class": "src ltr"}), raw_contents.find_all('div', {"class": ["trg ltr", "trg rtl arabic", "trg rtl"]})
+
+        translation_list = [translation.get_text().strip().lower() for translation in translations]
+        sentence_list = [sentence.get_text().strip().lower() for sentence in
+                         list(chain(*[sentence_pair for sentence_pair in zip(sentences_src, sentences_target)]))]
+
+        return set(translation_list), set(sentence_list)
+
+
+    if __name__ == '__main__':
+        TranslatorTest('translator.translator').run_tests()
+  learner_created: false
+feedback_link: https://hyperskill.org/projects/99/stages/546/implement#comment
+status: Solved
+record: 3
